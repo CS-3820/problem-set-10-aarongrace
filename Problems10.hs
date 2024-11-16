@@ -108,7 +108,12 @@ subst x m (Var y)
   | otherwise = Var y
 subst x m (Lam y n) = Lam y (substUnder x m y n)
 subst x m (App n1 n2) = App (subst x m n1) (subst x m n2)
-subst x m n = undefined
+
+subst x m (Store n) = Store (subst x m n)
+subst _ _ Recall = Recall
+subst x m (Throw n) = Throw (subst x m n)
+subst x m (Catch n1 y n2) = Catch (subst x m n1) y (substUnder x m y n2)
+
 
 {-------------------------------------------------------------------------------
 
@@ -202,7 +207,81 @@ bubble; this won't *just* be `Throw` and `Catch.
 -------------------------------------------------------------------------------}
 
 smallStep :: (Expr, Expr) -> Maybe (Expr, Expr)
-smallStep = undefined
+smallStep (expr, acc) =
+    handleApp (expr, acc)   `orElse`
+    handleCatch (expr, acc) `orElse`
+    handlePlus (expr, acc)  `orElse`
+    handleStore (expr, acc) `orElse`
+    handleThrow (expr, acc) `orElse`
+    handleRecall (expr, acc)
+
+handleApp :: (Expr, Expr) -> Maybe (Expr, Expr)
+handleApp (App (Lam param body) (Throw exception), acc)
+    | isValue exception = Just (Throw exception, acc)
+handleApp (App (Throw func) argument, acc)
+    | isValue func = Just (Throw func, acc)
+handleApp (App (Lam param body) argument, acc)
+    | isValue argument = Just (subst param argument body, acc)
+handleApp (App func argument, acc) =
+    case smallStep (func, acc) of
+        Just (func', acc')    -> Just (App func' argument, acc')
+        Nothing               -> fmap (\(argument', acc') -> (App func argument', acc')) 
+                                     (smallStep (argument, acc))
+handleApp _ = Nothing
+
+handleCatch :: (Expr, Expr) -> Maybe (Expr, Expr)
+handleCatch (Catch (Throw exception) param body, acc)
+    | isValue exception = Just (subst param exception body, acc)
+handleCatch (Catch expr param body, acc)
+    | isValue expr = Just (expr, acc)
+handleCatch (Catch expr param body, acc) = 
+    fmap (\(expr', acc') -> (Catch expr' param body, acc')) 
+         (smallStep (expr, acc))
+handleCatch _ = Nothing
+
+handlePlus :: (Expr, Expr) -> Maybe (Expr, Expr)
+handlePlus (Plus (Const left) (Const right), acc) = 
+    Just (Const (left + right), acc)
+handlePlus (Plus (Throw exception) expr, acc) 
+    | isValue exception = Just (Throw exception, acc)
+handlePlus (Plus (Const left) (Throw exception), acc) 
+    | isValue exception = Just (Throw exception, acc)
+handlePlus (Plus leftExpr rightExpr, acc) = 
+    case smallStep (leftExpr, acc) of
+        Just (leftExpr', acc') -> Just (Plus leftExpr' rightExpr, acc')
+        Nothing               -> fmap (\(rightExpr', acc') -> (Plus leftExpr rightExpr', acc'))
+                                     (smallStep (rightExpr, acc))
+handlePlus _ = Nothing
+
+handleStore :: (Expr, Expr) -> Maybe (Expr, Expr)
+handleStore (Store (Throw exception), acc) 
+    | isValue exception = Just (Throw exception, acc)
+handleStore (Store expr, acc)
+    | isValue expr = Just (expr, expr)
+handleStore (Store expr, acc) = 
+    fmap (\(expr', acc') -> (Store expr', acc'))
+         (smallStep (expr, acc))
+handleStore _ = Nothing
+
+handleThrow :: (Expr, Expr) -> Maybe (Expr, Expr)
+handleThrow (Throw (Throw exception), acc) 
+    | isValue exception = Just (Throw exception, acc)
+handleThrow (Throw exception, acc)
+    | isValue exception = Nothing
+handleThrow (Throw expr, acc) = 
+    fmap (\(expr', acc') -> (Throw expr', acc'))
+         (smallStep (expr, acc))
+handleThrow _ = Nothing
+
+handleRecall :: (Expr, Expr) -> Maybe (Expr, Expr)
+handleRecall (Recall, acc) = Just (acc, acc)
+handleRecall _ = Nothing
+
+orElse :: Maybe (Expr, Expr) -> Maybe (Expr, Expr) -> Maybe (Expr, Expr)
+orElse (Just result) _        = Just result
+orElse Nothing    (Just result) = Just result
+orElse Nothing    Nothing       = Nothing
+
 
 steps :: (Expr, Expr) -> [(Expr, Expr)]
 steps s = case smallStep s of
